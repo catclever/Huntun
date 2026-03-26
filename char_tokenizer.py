@@ -1,7 +1,12 @@
 import json
+import os
 
 class CharTokenizer:
-    def __init__(self, vocab_path="data/Basic_ZH/char_vocab.json"):
+    def __init__(self, vocab_path=None):
+        if vocab_path is None:
+            # Dynamically resolve to the bundled JSON in the same directory as this module
+            vocab_path = os.path.join(os.path.dirname(__file__), "char_vocab.json")
+            
         with open(vocab_path, "r", encoding="utf-8") as f:
             self.vocab = json.load(f)
         

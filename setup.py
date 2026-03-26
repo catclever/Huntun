@@ -12,6 +12,7 @@ setup(
     packages=["training.core"],
     # Maps the 'training.core' namespace directly to the root of this git repository (.)
     package_dir={"training.core": "."},
+    package_data={"training.core": ["*.json"]},
     install_requires=[
         "numpy",
         "pandas",
