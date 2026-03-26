@@ -1,9 +1,6 @@
 import numpy as np
 import pandas as pd
-try:
-    import mlx.core as mx
-except ImportError:
-    mx = None
+
 import json
 import os
 from typing import List, Tuple, Dict, Any
@@ -69,7 +66,7 @@ class MultiEmbDataLoader:
     def __iter__(self):
         return self
         
-    def __next__(self) -> Tuple[mx.array, List[mx.array], mx.array]:
+    def __next__(self) -> Tuple[Any, List[Any], Any]:
         if self.batch_idx >= self.num_batches:
             # End of Epoch
             self.current_epoch += 1
@@ -105,6 +102,7 @@ class MultiEmbDataLoader:
             attention_mask = torch.tensor(masks, dtype=torch.float32)
             batch_embs = [torch.from_numpy(np.array(arr[batch_indices])).float() for arr in self.embs]
         else:
+            import mlx.core as mx
             token_inputs = mx.array(padded_ids)
             attention_mask = mx.array(masks)
             batch_embs = [mx.array(arr[batch_indices]) for arr in self.embs]
@@ -178,7 +176,7 @@ class Phase1DataLoader:
     def __iter__(self):
         return self
         
-    def __next__(self) -> Tuple[List[mx.array], mx.array]:
+    def __next__(self) -> Tuple[List[Any], Any]:
         if self.batch_idx >= self.num_batches:
             self.current_epoch += 1
             self.batch_idx = 0
@@ -238,6 +236,7 @@ class Phase1DataLoader:
             self.batch_idx += 1
             return batch_embs_tensor, masks_tensor
         else:
+            import mlx.core as mx
             batch_embs_mx = [mx.array(np.stack(padded_embs[i])) for i in range(len(self.embs))]
             masks_mx = mx.array(masks)
             self.batch_idx += 1
