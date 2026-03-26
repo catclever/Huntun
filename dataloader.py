@@ -213,7 +213,6 @@ class Phase1DataLoader:
         # 2. Pad to the maximum document length in THIS specific batch
         padded_embs = [[] for _ in range(len(self.embs))]
         masks = []
-        z_dim = raw_embs_list[0][0].shape[-1]
         
         for b in range(len(batch_doc_indices)):
             l = lengths[b]
@@ -221,8 +220,9 @@ class Phase1DataLoader:
             
             for i in range(len(self.embs)):
                 arr = raw_embs_list[i][b]
+                embs_dim = arr.shape[-1]
                 if pad_len > 0:
-                    pad_array = np.zeros((pad_len, z_dim), dtype=arr.dtype)
+                    pad_array = np.zeros((pad_len, embs_dim), dtype=arr.dtype)
                     arr = np.concatenate([arr, pad_array], axis=0)
                 padded_embs[i].append(arr)
                 
