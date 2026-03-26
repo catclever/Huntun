@@ -1,6 +1,9 @@
 import numpy as np
 import pandas as pd
-import mlx.core as mx
+try:
+    import mlx.core as mx
+except ImportError:
+    mx = None
 import json
 import os
 from typing import List, Tuple, Dict, Any
