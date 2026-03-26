@@ -23,6 +23,7 @@ class Checkpointer:
         
         self._models = {}
         self._dataloaders = {}
+        self._optimizers = {}
         self._args = None
         self.current_step = 0
 
@@ -36,6 +37,10 @@ class Checkpointer:
     def register_dataloader(self, name: str, dataloader):
         """Register a custom dataloader that implements state_dict/load_state_dict"""
         self._dataloaders[name] = dataloader
+        
+    def register_optimizer(self, name: str, optimizer):
+        """Register an MLX optimizer to serialize its momentum/variance state dicts."""
+        self._optimizers[name] = optimizer
         
     def register_args(self, args: argparse.Namespace):
         """Register parsed CLI arguments to be saved inside the checkpoint."""
@@ -73,6 +78,16 @@ class Checkpointer:
                         print(f"Warning: Unrecognized model type for {name}")
                 except ImportError:
                     print(f"Warning: Model {name} looks like PyTorch but torch is not installed.")
+                    
+        # Save optimizers
+        if self._optimizers:
+            import mlx.core as mx
+            from mlx.utils import tree_flatten
+            for name, opt in self._optimizers.items():
+                if hasattr(opt, "state"):
+                    flat_state = dict(tree_flatten(opt.state))
+                    if flat_state: # don't save empty states
+                        mx.save_safetensors(f"{save_path}/{name}.safetensors", flat_state)
             
         # Save dataloaders
         for name, loader in self._dataloaders.items():
@@ -178,6 +193,18 @@ class Checkpointer:
                         model.load_state_dict(torch.load(target_file, weights_only=True))
             except Exception as e:
                 print(f"Warning: Could not load weights for {name}: {e}")
+                
+        for name, opt in self._optimizers.items():
+            try:
+                import mlx.core as mx
+                from mlx.utils import tree_unflatten
+                target_file = f"{load_path}/{name}.safetensors"
+                if os.path.exists(target_file):
+                    # Load flat safetensors and rebuild the nested MLX dict structure
+                    flat_state = list(mx.load(target_file).items())
+                    opt.state = tree_unflatten(flat_state)
+            except Exception as e:
+                print(f"Warning: Could not load state for optimizer {name}: {e}")
                 
         for name, loader in self._dataloaders.items():
             if hasattr(loader, "load_state_dict"):
