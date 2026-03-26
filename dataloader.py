@@ -207,8 +207,8 @@ class Phase1DataLoader:
                 # Just copy the slice into memory
                 raw_embs_list[i].append(np.array(self.embs[i][start_pos : start_pos+eff_len]))
                 
-        # 2. Pad to the exact max_episode_len if provided; otherwise pad dynamically to batch's max
-        max_len = self.max_episode_len if self.max_episode_len is not None else max(lengths)
+        # 2. Pad to the length of the longest document in THIS specific batch (Dynamic Batching)
+        max_len = max(lengths)
         
         # 2. Pad to the maximum document length in THIS specific batch
         padded_embs = [[] for _ in range(len(self.embs))]
