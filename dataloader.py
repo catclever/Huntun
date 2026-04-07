@@ -142,67 +142,94 @@ class ChunkedNpzDataLoader:
     def __init__(self, 
                  parquet_path: str,
                  models: List[str], # 对应你的模型标识，例如 ["bge", "qwen", "xiaobu"]
-                 tokenizer,
+                 chunk_patterns: dict = None,
+                 tokenizer=None,
                  ms_repo_id: str = None, 
+                 chunk_size: int = 500000,
                  local_npz_dir: str = None,
                  batch_size: int = 256,
                  max_seq_len: int = 512,
                  shuffle: bool = True,
                  seed: int = 42,
-                 backend: str = 'mlx'):
+                 backend: str = 'mlx',
+                 lazy_start: bool = False,
+                 cache_dir: str = './datas',
+                 auto_cleanup: bool = True):
         
         self.backend = backend
         self.batch_size = batch_size
         self.max_seq_len = max_seq_len
         self.shuffle = shuffle
         self.seed = seed
-        self.tokenizer = tokenizer
         self.models = models
+        self.chunk_patterns = chunk_patterns or {}
+        self.ms_repo_id = ms_repo_id
+        self.tokenizer = tokenizer
+        self.cache_dir = cache_dir
+        self.auto_cleanup = auto_cleanup
         
-        # 1. 自动挂载魔搭数据集或加载本地路径
-        if ms_repo_id:
-            try:
-                from modelscope import snapshot_download
-                print(f"[DataLoader] 正在从 ModelScope 极速同步数据分块库: {ms_repo_id}...")
-                self.npz_dir = snapshot_download(ms_repo_id, repo_type="dataset")
-                print(f"[DataLoader] 远端分块库拉取/命中本地缓存完毕: {self.npz_dir}")
-            except ImportError:
-                raise RuntimeError("请安装 modelscope: pip install modelscope")
-        else:
-            self.npz_dir = local_npz_dir
-            
-        if not self.npz_dir or not os.path.isdir(self.npz_dir):
-            raise ValueError("必须提供 ms_repo_id 或有效的 local_npz_dir")
-
-        # 2. 从分块文件中提取跨界物理坐标。
-        # 假设文件名格式如：bge_chunk_0000000_0500000.npz
-        # 取第一个基准模型（比如 models[0]）作为标杆去探测坐标
-        base_model = self.models[0]
-        pattern = os.path.join(self.npz_dir, f"{base_model}*chunk_*.npz")
-        chunk_files = sorted(glob.glob(pattern))
-        
-        if not chunk_files:
-            raise FileNotFoundError(f"[DataLoader] 在 {self.npz_dir} 没有找到类似 {base_model}_chunk_***.npz 的文件！")
-        
-        self.chunk_bounds = []
-        for f in chunk_files:
-            fname = os.path.basename(f)
-            # 兼容带有或不带 model 前缀的文件名格式
-            match = re.search(r'chunk_(\d+)_(\d+)\.npz', fname)
-            if match:
-                self.chunk_bounds.append((int(match.group(1)), int(match.group(2))))
-                
-        # 以 start_idx 排序确保顺序正确
-        self.chunk_bounds.sort(key=lambda x: x[0])
-        print(f"[DataLoader] 探明分布！共扫出 {len(self.chunk_bounds)} 个分块。")
-
-        # 3. 提取对应的全体文本数据 (保持在内存，纯文本极小)
+        # 3. 提取对应的全体文本数据 (先行提取，以获得 total_samples 决定边界)
         print(f"[DataLoader] 正在装载基准文本体系: {parquet_path}...")
         df = pd.read_parquet(parquet_path)
         self.text_chunks = df['chunks'].explode().dropna().tolist()
         self.total_samples = len(self.text_chunks)
         print(f"[DataLoader] 成功吃进文本池: {self.total_samples} 条")
         del df
+        
+        # 1. 自动挂载魔搭数据集或加载本地路径 (改为只验证配置，去除暴力的 snapshot_download 全本拉取)
+        if ms_repo_id:
+            try:
+                from modelscope.hub.file_download import dataset_file_download
+                print(f"[DataLoader] 已启用 ModelScope 终极按需流式串流模式: {ms_repo_id}...")
+            except ImportError:
+                raise RuntimeError("请安装 modelscope: pip install modelscope")
+        else:
+            self.npz_dir = local_npz_dir
+            if not self.npz_dir or not os.path.isdir(self.npz_dir):
+                raise ValueError("必须提供 ms_repo_id 或有效的 local_npz_dir")
+
+        # 2. 按模型分别探测物理分块，按 start 索引取交集（容错不同模型尾部 end 不同）
+        self.chunk_bounds = []
+        self._per_model_bounds = {}  # {model_name: {start: end}}
+        try:
+            if self.ms_repo_id:
+                from modelscope.hub.api import HubApi
+                api = HubApi()
+                res = api.get_dataset_files(self.ms_repo_id, recursive=True)
+                chunk_files = [f.get("Path", f.get("Name", "")) for f in res]
+            else:
+                chunk_files = glob.glob(os.path.join(self.npz_dir, "**", "*.npz"), recursive=True)
+            
+            # 按模型归类，各自收集 start → end 的映射
+            for model_name in self.models:
+                pattern = self.chunk_patterns.get(model_name, "")
+                prefix = pattern.split("/")[0] if "/" in pattern else model_name
+                start_to_end = {}
+                for f in chunk_files:
+                    if f.endswith(".npz") and f.startswith(prefix + "/"):
+                        match = re.search(r'chunk_(\d+)_(\d+)\.npz', os.path.basename(f))
+                        if match:
+                            start_to_end[int(match.group(1))] = int(match.group(2))
+                self._per_model_bounds[model_name] = start_to_end
+                print(f"[DataLoader]   {model_name}: {len(start_to_end)} 个分块")
+            
+            # 按 start 索引取交集（容错：youtu 的 end=9000000 和 bge 的 end=8656199 都算 start=8500000）
+            if self._per_model_bounds:
+                common_starts = set.intersection(*[set(d.keys()) for d in self._per_model_bounds.values()])
+                for s in sorted(common_starts):
+                    # 取所有模型中最小的 end 作为安全数据范围
+                    min_end = min(self._per_model_bounds[m][s] for m in self.models)
+                    self.chunk_bounds.append((s, min_end))
+            
+            print(f"[DataLoader] 多模型安全交集（按start容错）：{len(self.chunk_bounds)} 个共享分块。")
+        except Exception as e:
+            print(f"[DataLoader] 物理探测失败，回退到严格数学计算: {e}")
+            self.chunk_bounds = []
+            for start_idx in range(0, self.total_samples, chunk_size):
+                 end_idx = min(start_idx + chunk_size, self.total_samples)
+                 self.chunk_bounds.append((start_idx, end_idx))
+
+
         
         # 4. 统计与 Epoch 控制变量
         self.rng = np.random.default_rng(seed)
@@ -219,14 +246,37 @@ class ChunkedNpzDataLoader:
         self.active_chunk_embs = None
         self.active_micro_indices = []
         self.active_micro_ptr = 0
+        self._prev_chunk_paths = []  # 上一个已消费分块的缓存路径，用于清理
         
         # 异步流水线 (Async Prefetch)
         self.prefetch_queue = queue.Queue(maxsize=1) # 内存里永远只多塞一块，极限控流
         self.stop_event = threading.Event()
+        self._started = False
         
-        # 启动后台工人开始搬砖
+        # 延迟启动：如果要从 checkpoint 恢复，不要在这里白白下载一个块
+        if not lazy_start:
+            self._do_start()
+
+    def _do_start(self):
+        """真正启动后台下载，首次加载第一个块"""
+        if self._started:
+            return
+        self._started = True
         self._start_prefetching(start_macro_ptr=0)
         self._pop_next_chunk()
+
+    def _cleanup_cached_files(self, paths: list):
+        """清理已经消费完毕的 ModelScope 缓存文件，释放磁盘空间"""
+        cleaned = 0
+        for p in paths:
+            try:
+                if p and os.path.exists(p):
+                    os.remove(p)
+                    cleaned += 1
+            except OSError:
+                pass
+        if cleaned:
+            print(f"[DataLoader] 🧹 已清理 {cleaned} 个已消费缓存文件")
 
     def _start_prefetching(self, start_macro_ptr):
         """挂起旧线程，启动全新后台线程，从指定的 macro_ptr 开始默默搬取"""
@@ -256,16 +306,25 @@ class ChunkedNpzDataLoader:
             start_idx, end_idx = self.chunk_bounds[chunk_idx]
             
             try:
-                # print(f"\n[Backend Worker] 悄悄开始向深渊抓取并解压下一块... [{start_idx}:{end_idx}]")
                 active_chunk_embs = []
+                cached_paths = []  # 记录下载路径用于后续清理
                 for model_name in self.models:
-                    cand_name = f"{model_name}_chunk_{start_idx:07d}_{end_idx:07d}.npz"
-                    path = os.path.join(self.npz_dir, cand_name)
-                    if not os.path.exists(path):
-                         raise FileNotFoundError(f"后台打工仔抓取失败！目标块缺失：{path}")
+                    pattern = self.chunk_patterns.get(model_name, f"{model_name}_chunk_{'{start:07d}'}_{'{end:07d}'}.npz")
+                    # 用该模型自己的真实 end（容错命名差异，如 youtu 的 9000000 vs bge 的 8656199）
+                    model_end = self._per_model_bounds.get(model_name, {}).get(start_idx, end_idx)
+                    cand_name = pattern.format(start=start_idx, end=model_end)
+                    
+                    if self.ms_repo_id:
+                         from modelscope.hub.file_download import dataset_file_download
+                         path = dataset_file_download(self.ms_repo_id, cand_name, cache_dir=self.cache_dir)
+                    else:
+                         path = os.path.join(self.npz_dir, cand_name)
+                         if not os.path.exists(path):
+                              raise FileNotFoundError(f"后台打工仔抓取失败！本地目标块缺失：{path}")
                     
                     arr = np.load(path)['features']
                     active_chunk_embs.append(arr)
+                    cached_paths.append(path)
                     
                 cur_chunk_size = end_idx - start_idx
                 active_micro_indices = np.arange(cur_chunk_size)
@@ -279,7 +338,8 @@ class ChunkedNpzDataLoader:
                     "embs": active_chunk_embs,
                     "micro_indices": active_micro_indices,
                     "global_start": start_idx,
-                    "macro_idx_ptr": worker_macro_ptr
+                    "macro_idx_ptr": worker_macro_ptr,
+                    "cached_paths": cached_paths
                 }
                 # 这里会阻塞！直到上一块被 GPU 吃光
                 self.prefetch_queue.put(payload)
@@ -292,6 +352,11 @@ class ChunkedNpzDataLoader:
 
     def _pop_next_chunk(self):
         """主线程调用的吸星大法，把工人装好的箱子拿走"""
+        # 先清理上一个已消费的分块缓存
+        if self.auto_cleanup and self._prev_chunk_paths:
+            self._cleanup_cached_files(self._prev_chunk_paths)
+            self._prev_chunk_paths = []
+        
         payload = self.prefetch_queue.get()
         if payload is None:
             raise StopIteration
@@ -303,9 +368,17 @@ class ChunkedNpzDataLoader:
         self.active_global_start = payload["global_start"]
         self.active_macro_idx_ptr = payload["macro_idx_ptr"]
         self.active_micro_ptr = 0
+        self._prev_chunk_paths = payload.get("cached_paths", [])
+        
+        if not hasattr(self, 'emb_dims'):
+            self.emb_dims = [arr.shape[-1] for arr in self.active_chunk_embs]
+            print(f"[DataLoader] 自动侦测到多路特征维度: {self.emb_dims}")
+            
         print(f"\n[DataLoader] 💥 无缝吸入后台新缓存块 (全局起点: {self.active_global_start}) - 纯异步无卡顿！")
 
     def __iter__(self):
+        if not self._started:
+            self._do_start()
         return self
 
     def __next__(self) -> Tuple[Any, List[Any], Any]:
@@ -369,9 +442,12 @@ class ChunkedNpzDataLoader:
         self.macro_chunk_indices = np.array(state["macro_chunk_indices"])
         print(f"[DataLoader] 🔌 自断点恢复：正处于 Epoch {self.current_epoch}, 宏观 Chunk 指针 {self.active_macro_idx_ptr}/{len(self.macro_chunk_indices)}")
         
-        # 断点恢复的究极魔法：命令后台线程清空当前一切，直接从历史断点重新满血搬取！
+        # 断点恢复：直接从历史断点启动下载，跳过 __init__ 的默认启动
+        self._started = True
         self._start_prefetching(start_macro_ptr=self.active_macro_idx_ptr)
         self._pop_next_chunk()
+
+class Phase1DataLoader:
     """
     Dataloader specifically for Phase 1 (Mamba Spatiotemporal Dynamics).
     It pulls *contiguous entire documents* dynamically instead of fixed arbitrary slices,

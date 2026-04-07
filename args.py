@@ -11,9 +11,11 @@ def get_training_parser(description: str = "Training Script"):
     parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
     parser.add_argument("--save_steps", type=int, default=1000, help="Save a checkpoint every X steps")
     parser.add_argument("--z_dim", type=int, default=1024, help="Dimension of the absolute truth anchor space (z_target)")
-    parser.add_argument("--fusion_alpha", type=float, default=0.7, help="Weight of the randomly selected primary embedding logic (rest divided equally)")
+    parser.add_argument("--fusion_main_weight", type=float, default=1.0, help="Weight of the randomly selected primary embedding logic")
+    parser.add_argument("--fusion_other_weight", type=float, default=0.1, help="Weight assigned to all other non-primary embeddings")
+    parser.add_argument("--config_file", type=str, default="dataset_config.json", help="Path to JSON configuration file for Dataset & Models")
     parser.add_argument("--out_dir", type=str, default="checkpoints/run", help="Output directory for checkpoints")
-    parser.add_argument("--ckpt_prefix", type=str, nargs="?", const="TIMESTAMP", default=None, help="Prefix for checkpoint folders. If passed empty, uses timestamp.")
+    parser.add_argument("--ckpt_prefix", type=str, nargs="?", const="TIMESTAMP", default=None, help="Prefix for checkpoint folders")
     parser.add_argument("--tokenizer_id", type=str, default="Qwen/Qwen2.5-7B", help="HuggingFace Tokenizer ID")
     
     # Dual Resume Mechanism
@@ -21,5 +23,11 @@ def get_training_parser(description: str = "Training Script"):
     parser.add_argument("--resume_from", type=str, default=None, help="Explicitly specify the path to a checkpoint directory to resume from")
     
     parser.add_argument("--warmup_steps", type=int, default=2000, help="Learning rate linear warmup steps")
+    parser.add_argument("--data_dir", type=str, default="./datas", help="Local cache directory for ModelScope downloads")
+    
+    # Auxiliary Flow Loss
+    parser.add_argument("--x1_weight", type=float, default=0.5, help="Weight for x1-consistency loss (0=disabled)")
+    parser.add_argument("--snap_ce_weight", type=float, default=0.1, help="Weight for snap cross-entropy loss (0=disabled)")
+    parser.add_argument("--t_power", type=float, default=0.5, help="Power for high-t sampling bias (1.0=uniform, 0.5=sqrt bias)")
     
     return parser
