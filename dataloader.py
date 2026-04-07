@@ -32,7 +32,7 @@ class MultiEmbDataLoader:
         self.batch_size = batch_size
         self.max_seq_len = max_seq_len
         self.shuffle = shuffle
-        self.seed = seed
+        self.seed = seed if seed is not None else int(__import__("time").time())
         self.tokenizer = tokenizer
         
         # 1. Load Text Data
@@ -160,7 +160,7 @@ class ChunkedNpzDataLoader:
         self.batch_size = batch_size
         self.max_seq_len = max_seq_len
         self.shuffle = shuffle
-        self.seed = seed
+        self.seed = seed if seed is not None else int(__import__("time").time())
         self.models = models
         self.chunk_patterns = chunk_patterns or {}
         self.ms_repo_id = ms_repo_id
