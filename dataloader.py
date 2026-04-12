@@ -345,10 +345,13 @@ class ChunkedNpzDataLoader:
                 self.prefetch_queue.put(payload)
                 worker_macro_ptr += 1
             except Exception as e:
-                import traceback
-                traceback.print_exc()
-                self.prefetch_queue.put(e)
-                return
+                print(f"\n[DataLoader] 后台打工仔抓取/加载失败 (网络可能断开了？): {e}")
+                print(f"[DataLoader] 这不是致命错误！打工仔将在 10 秒后原地重新尝试拉取 Chunk {chunk_idx}...")
+                import time
+                time.sleep(10)
+                # 不退出进程，不抛出异常。
+                # 既然失败了，worker_macro_ptr 就不加 1，直接 continue，下一轮会继续死磕这个块！
+                continue
 
     def _pop_next_chunk(self):
         """主线程调用的吸星大法，把工人装好的箱子拿走"""
@@ -432,20 +435,42 @@ class ChunkedNpzDataLoader:
     def state_dict(self) -> Dict[str, Any]:
         return {
             "current_epoch": self.current_epoch,
-            "active_macro_idx_ptr": self.active_macro_idx_ptr,
-            "macro_chunk_indices": self.macro_chunk_indices.tolist()
+            "active_macro_idx_ptr": getattr(self, "active_macro_idx_ptr", 0),
+            "macro_chunk_indices": getattr(self, "macro_chunk_indices", np.array([])).tolist(),
+            "active_micro_ptr": getattr(self, "active_micro_ptr", 0),  # 保存当前块内部的微观进度！
+            "seed_snapshot": getattr(self, "seed", int(__import__("time").time()))  # 永久锁定随机种子
         }
         
     def load_state_dict(self, state: Dict[str, Any]):
         self.current_epoch = state["current_epoch"]
         self.active_macro_idx_ptr = state["active_macro_idx_ptr"]
         self.macro_chunk_indices = np.array(state["macro_chunk_indices"])
-        print(f"[DataLoader] 🔌 自断点恢复：正处于 Epoch {self.current_epoch}, 宏观 Chunk 指针 {self.active_macro_idx_ptr}/{len(self.macro_chunk_indices)}")
         
+        print(f"[DataLoader] 🔌 自断点恢复：正处于 Epoch {self.current_epoch},  宏观 Chunk 指针 {self.active_macro_idx_ptr}/{len(self.macro_chunk_indices)}")
+
+        # 核心漏洞修复法则：如果是从早期未记录种子与微观游标的破损失忆版本恢复（当前情况）
+        # 强行拨动宏观指针进入下一个崭新纯净块，避免在一锅被错乱打散重组的烂粥里吃重复数据
+        is_legacy_state = "seed_snapshot" not in state or "active_micro_ptr" not in state
+        
+        if is_legacy_state:
+            self.active_macro_idx_ptr = min(self.active_macro_idx_ptr + 1, len(self.macro_chunk_indices) - 1)
+            print(f"[DataLoader] ⚠️ 检测到历史遗留 Checkpoint 缺乏微秩序信息，为了避免重复喂入，已强行剥离并将指针拨至下一块干净数据：{self.active_macro_idx_ptr}。")
+        else:
+            # 未来恢复逻辑：一切数据时空完美复刻
+            self.seed = state["seed_snapshot"]
+            
         # 断点恢复：直接从历史断点启动下载，跳过 __init__ 的默认启动
         self._started = True
         self._start_prefetching(start_macro_ptr=self.active_macro_idx_ptr)
         self._pop_next_chunk()
+        
+        if not is_legacy_state:
+            # 严格对准之前在这个块里吃过的条数（只有新形态拥有这个待遇）
+            self.active_micro_ptr = state["active_micro_ptr"]
+            print(f"[DataLoader] 📍 已还原微观读取游标与世界线乱序定律：从当前块的第 {self.active_micro_ptr} 条语句无缝继续训练！")
+        else:
+            # 遗留强行跳块版本下，微观进度自然是从 0 重新算起
+            self.active_micro_ptr = 0
 
 class Phase1DataLoader:
     """
