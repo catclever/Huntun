@@ -206,7 +206,8 @@ class ChunkedNpzDataLoader:
                 prefix = pattern.split("/")[0] if "/" in pattern else model_name
                 start_to_end = {}
                 for f in chunk_files:
-                    if f.endswith(".npz") and f.startswith(prefix + "/"):
+                    f_normalized = f.replace("\\", "/")
+                    if f_normalized.endswith(".npz") and (f_normalized.startswith(prefix + "/") or f"/{prefix}/" in f_normalized):
                         match = re.search(r'chunk_(\d+)_(\d+)\.npz', os.path.basename(f))
                         if match:
                             start_to_end[int(match.group(1))] = int(match.group(2))

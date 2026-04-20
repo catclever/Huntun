@@ -68,7 +68,13 @@ class Checkpointer:
         # Save models
         for name, model in self._models.items():
             if hasattr(model, "save_weights"):
-                model.save_weights(f"{save_path}/{name}.safetensors")
+                try:
+                    model.save_weights(f"{save_path}/{name}.safetensors")
+                except RuntimeError as e:
+                    if "without a primitive" in str(e):
+                        print(f"Warning: Could not save model '{name}' due to un-evaluated compilation arrays. Its state will be discarded for this emergency checkpoint.")
+                    else:
+                        raise e
             else:
                 try:
                     import torch
@@ -87,7 +93,13 @@ class Checkpointer:
                 if hasattr(opt, "state"):
                     flat_state = dict(tree_flatten(opt.state))
                     if flat_state: # don't save empty states
-                        mx.save_safetensors(f"{save_path}/{name}.safetensors", flat_state)
+                        try:
+                            mx.save_safetensors(f"{save_path}/{name}.safetensors", flat_state)
+                        except RuntimeError as e:
+                            if "without a primitive" in str(e):
+                                print(f"Warning: Could not save state for optimizer {name} due to un-evaluated compilation arrays. The optimizer state will be discarded for this checkpoint, but model weights are safe.")
+                            else:
+                                raise e
             
         # Save dataloaders
         for name, loader in self._dataloaders.items():
@@ -125,7 +137,9 @@ class Checkpointer:
                 
             # Filter strictly by prefix if provided
             if self.prefix and self.prefix != "TIMESTAMP":
-                if not d.startswith(self.prefix + "_"):
+                expected_emergency = f"{self.prefix}_latest_emergency"
+                expected_step_prefix = f"{self.prefix}_step_"
+                if d != expected_emergency and not d.startswith(expected_step_prefix):
                     continue
                     
             if d.endswith("latest_emergency") or "_step_" in d or d.startswith("step_"):
