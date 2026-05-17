@@ -155,10 +155,15 @@ class Checkpointer:
                             pass
                             
                 # Fallback to folder name parsing if JSON parsing failed
-                if step == -1 and "_step_" in d:
-                    parts = d.split("_step_")
-                    if len(parts) == 2 and parts[1].isdigit():
-                        step = int(parts[1])
+                if step == -1:
+                    if "_step_" in d:
+                        parts = d.split("_step_")
+                        if len(parts) == 2 and parts[1].isdigit():
+                            step = int(parts[1])
+                    elif d.startswith("step_"):
+                        parts = d.split("step_")
+                        if len(parts) == 2 and parts[1].isdigit():
+                            step = int(parts[1])
                         
                 if step > max_step:
                     max_step = step
@@ -231,5 +236,12 @@ class Checkpointer:
                 except Exception as e:
                     print(f"Warning: Could not load state for dataloader {name}: {e}")
                     
+        # Fallback for step parsing if dataloader state missing
+        if step == 0:
+            import re
+            m = re.search(r'step_(\d+)', load_path)
+            if m:
+                step = int(m.group(1))
+                
         self.current_step = step
         return step
