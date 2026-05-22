@@ -594,3 +594,122 @@ class Phase1DataLoader:
         self.batch_idx = state["batch_idx"]
         self.current_epoch = state["current_epoch"]
         self.indices = np.array(state["indices"])
+
+class TextDocumentDataLoader:
+    """
+    DataLoader specifically for Phase 1 End-to-End.
+    Reads `.parquet` text chunks, groups them into full documents (causal sequences),
+    and yields 3D token tensors: (Batch, Max_Sentences, Max_Tokens).
+    """
+    def __init__(self, 
+                 parquet_path: str,
+                 tokenizer,
+                 batch_size: int = 16,
+                 max_episode_len: int = None,
+                 max_seq_len: int = 256,
+                 seed: int = 42,
+                 backend: str = 'mlx'):
+        
+        self.backend = backend
+        self.tokenizer = tokenizer
+        self.batch_size = batch_size
+        self.max_episode_len = max_episode_len
+        self.max_seq_len = max_seq_len
+        
+        print("Reading Document Texts and Chunk Counts...")
+        df = pd.read_parquet(parquet_path)
+        self.text_chunks = df['chunks'].explode().dropna().tolist()
+        self.chunk_counts = df['chunk_count'].values
+        
+        self.doc_start_indices = np.concatenate(([0], np.cumsum(self.chunk_counts)[:-1]))
+        self.total_docs = len(self.chunk_counts)
+        print(f"Loaded strictly bounded {self.total_docs} semantic documents (Text only).")
+        
+        del df
+        
+        self.rng = np.random.default_rng(seed)
+        self.current_epoch = 0
+        self.batch_idx = 0
+        
+        self.indices = np.arange(self.total_docs)
+        self.rng.shuffle(self.indices)
+        self.num_batches = int(np.ceil(self.total_docs / self.batch_size))
+        
+    def __iter__(self):
+        return self
+        
+    def __next__(self) -> Tuple[Any, Any, Any]:
+        if self.batch_idx >= self.num_batches:
+            self.current_epoch += 1
+            self.batch_idx = 0
+            self.rng.shuffle(self.indices)
+            raise StopIteration
+            
+        start_idx = self.batch_idx * self.batch_size
+        end_idx = min(start_idx + self.batch_size, self.total_docs)
+        
+        batch_doc_indices = self.indices[start_idx:end_idx]
+        
+        batch_docs_sentences = []
+        for doc_idx in batch_doc_indices:
+            start_pos = self.doc_start_indices[doc_idx]
+            count = self.chunk_counts[doc_idx]
+            
+            if self.max_episode_len is not None:
+                eff_len = min(count, self.max_episode_len)
+            else:
+                eff_len = min(count, 256) # Safety cap
+                
+            sentences = self.text_chunks[start_pos : start_pos + eff_len]
+            batch_docs_sentences.append(sentences)
+            
+        # 强制固定句子长度维度！这是为了防止 Apple MLX 的 @mx.compile 
+        # 因为每一批次的 shape 不同而疯狂重新编译，最终导致图缓存撑爆统一内存 (Jetsam Kill)。
+        max_sentences = self.max_episode_len if self.max_episode_len else 256
+        
+        # We will flatten to tokenize efficiently, then reshape
+        flat_texts = []
+        for doc in batch_docs_sentences:
+            flat_texts.extend(doc)
+            
+        encoded_list = [self.tokenizer.encode(t, add_special_tokens=True)[:self.max_seq_len] for t in flat_texts]
+        max_tokens = max(max((len(seq) for seq in encoded_list), default=1), 1)
+        
+        # Prepare 3D tensors: (B, max_sentences, max_tokens)
+        padded_ids = np.zeros((len(batch_docs_sentences), max_sentences, max_tokens), dtype=np.int32)
+        padded_ids.fill(self.tokenizer.pad_token_id)
+        
+        attention_mask = np.zeros((len(batch_docs_sentences), max_sentences, max_tokens), dtype=np.float32)
+        sentence_mask = np.zeros((len(batch_docs_sentences), max_sentences), dtype=np.float32)
+        
+        flat_idx = 0
+        for b, doc in enumerate(batch_docs_sentences):
+            for s, _ in enumerate(doc):
+                seq = encoded_list[flat_idx]
+                seq_len = len(seq)
+                padded_ids[b, s, :seq_len] = seq
+                attention_mask[b, s, :seq_len] = 1.0
+                sentence_mask[b, s] = 1.0
+                flat_idx += 1
+                
+        if self.backend == 'torch':
+            import torch
+            ids_t = torch.tensor(padded_ids, dtype=torch.long)
+            att_t = torch.tensor(attention_mask, dtype=torch.float32)
+            sen_t = torch.tensor(sentence_mask, dtype=torch.float32)
+        else:
+            import mlx.core as mx
+            ids_t = mx.array(padded_ids)
+            att_t = mx.array(attention_mask)
+            sen_t = mx.array(sentence_mask)
+            
+        self.batch_idx += 1
+        return ids_t, att_t, sen_t
+        
+    def state_dict(self) -> Dict[str, Any]:
+        return {"batch_idx": self.batch_idx, "current_epoch": self.current_epoch, "indices": self.indices.tolist()}
+        
+    def load_state_dict(self, state: Dict[str, Any]):
+        self.batch_idx = state["batch_idx"]
+        self.current_epoch = state["current_epoch"]
+        self.indices = np.array(state["indices"])

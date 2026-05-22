@@ -10,8 +10,9 @@ class Checkpointer:
     A unified checkpointer that manages saving/loading Model weights and Dataloader states.
     It automatically catches SIGINT/SIGTERM to perform emergency saves before exiting.
     """
-    def __init__(self, out_dir: str, prefix: str = None):
+    def __init__(self, out_dir: str, prefix: str = None, keep_last_k: int = 5):
         self.out_dir = out_dir
+        self.keep_last_k = keep_last_k
         
         if prefix == "TIMESTAMP":
             from datetime import datetime
@@ -113,13 +114,62 @@ class Checkpointer:
         if self._args is not None:
             # We must convert argparse.Namespace to dict 
             with open(f"{save_path}/training_args.json", "w") as f:
-                json.dump(vars(self._args), f)
+                json.dump(vars(self._args), f, indent=4, ensure_ascii=False)
                 
         if is_emergency:
             print(f"[Checkpoint] Emergency save completed at {save_path}. Safely exiting process.")
             sys.exit(0)
         else:
             print(f"[Checkpoint] Saved at step {step} to {save_path}")
+            self._garbage_collect()
+            
+    def _garbage_collect(self):
+        """Removes older checkpoints to save disk space, keeping only the latest `keep_last_k`."""
+        if self.keep_last_k <= 0:
+            return
+            
+        import shutil
+        saved_ckpts = []
+        for d in os.listdir(self.out_dir):
+            d_path = os.path.join(self.out_dir, d)
+            if not os.path.isdir(d_path):
+                continue
+                
+            # Don't delete emergency saves automatically
+            if "latest_emergency" in d:
+                continue
+                
+            # Match current prefix
+            if self.prefix and self.prefix != "TIMESTAMP":
+                if not d.startswith(f"{self.prefix}_step_"):
+                    continue
+                    
+            if "_step_" in d or d.startswith("step_"):
+                # Parse step
+                step = -1
+                if "_step_" in d:
+                    parts = d.split("_step_")
+                    if len(parts) == 2 and parts[1].isdigit():
+                        step = int(parts[1])
+                elif d.startswith("step_"):
+                    parts = d.split("step_")
+                    if len(parts) == 2 and parts[1].isdigit():
+                        step = int(parts[1])
+                        
+                if step != -1:
+                    saved_ckpts.append((step, d_path))
+                    
+        # Sort by step ascending
+        saved_ckpts.sort(key=lambda x: x[0])
+        
+        # Delete if exceeding limits
+        if len(saved_ckpts) > self.keep_last_k:
+            for step, path in saved_ckpts[:-self.keep_last_k]:
+                try:
+                    shutil.rmtree(path)
+                    print(f"  -> [GC] Removed old checkpoint: {path} to save disk space.")
+                except Exception as e:
+                    print(f"  -> [GC] Failed to remove {path}: {e}")
             
     def load_latest(self) -> int:
         """Automatically finds the checkpoint with the highest global_step."""

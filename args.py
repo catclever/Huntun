@@ -10,6 +10,7 @@ def get_training_parser(description: str = "Training Script"):
     parser.add_argument("--epochs", type=int, default=3, help="Total number of epochs to train")
     parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
     parser.add_argument("--save_steps", type=int, default=1000, help="Save a checkpoint every X steps")
+    parser.add_argument("--keep_last_k", type=int, default=5, help="Number of checkpoints to keep on disk. Oldest will be deleted.")
     parser.add_argument("--seed", type=int, default=None, help="Random seed for shuffling chunks and data. Leave as None for true randomness across runs.")
     parser.add_argument("--z_dim", type=int, default=1024, help="Dimension of the absolute truth anchor space (z_target)")
     parser.add_argument("--fusion_main_weight", type=float, default=1.0, help="Weight of the randomly selected primary embedding logic")
