@@ -33,4 +33,11 @@ def get_training_parser(description: str = "Training Script"):
     parser.add_argument("--snap_ce_weight", type=float, default=0.1, help="Weight for snap cross-entropy loss (0=disabled)")
     parser.add_argument("--t_power", type=float, default=0.5, help="Power for high-t sampling bias (1.0=uniform, 0.5=sqrt bias)")
     
+    # Concept Decoder Specific
+    parser.add_argument("--noise_min", type=float, default=0.01, help="Minimum noise scale added to concept cloud during training")
+    parser.add_argument("--noise_max", type=float, default=0.2, help="Maximum noise scale added to concept cloud during training")
+    parser.add_argument("--cpu_batch_size", type=int, default=256, help="Documents per super-batch")
+    
+    parser.add_argument("--seq_len", type=int, default=512, help="Fixed sequence length for training and chunking dataset samples")
+    parser.add_argument("--num_concept_blocks", type=int, default=10, help="Number of highest-resonance concept blocks to retain as anchors")
     return parser
