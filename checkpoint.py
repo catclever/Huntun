@@ -87,6 +87,10 @@ class Checkpointer:
         self.save(self.current_step, is_emergency=True)
         sys.exit(0)
         
+    def set_step(self, step: int):
+        """Explicitly sets the current global step counter for emergency checkpointing."""
+        self.current_step = step
+
     def step(self):
         """Advances the internal step counter and automatically saves if save_steps is reached."""
         self.current_step += 1
@@ -97,6 +101,7 @@ class Checkpointer:
 
     def save(self, step: int, is_emergency: bool = False):
         """Saves registered models and dataloaders."""
+        self.current_step = step
         base_name = f"step_{step}_emergency" if is_emergency else f"step_{step}"
         folder_name = f"{self.prefix}_{base_name}" if self.prefix else base_name
         save_path = os.path.join(self.out_dir, folder_name)
